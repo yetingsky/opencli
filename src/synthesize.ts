@@ -70,6 +70,49 @@ export function synthesizeFromExplore(target: string, opts: any = {}): any {
   };
 }
 
+/** Volatile params to strip from generated URLs */
+const VOLATILE_PARAMS = new Set(['w_rid', 'wts', 'callback', '_', 'timestamp', 't', 'nonce', 'sign']);
+const SEARCH_PARAM_NAMES = new Set(['q', 'query', 'keyword', 'search', 'wd', 'kw', 'w', 'search_query']);
+const LIMIT_PARAM_NAMES = new Set(['ps', 'page_size', 'limit', 'count', 'per_page', 'size', 'num']);
+const PAGE_PARAM_NAMES = new Set(['pn', 'page', 'page_num', 'offset', 'cursor']);
+
+/**
+ * Build a clean templated URL from a raw API URL.
+ * - Strips volatile params (w_rid, wts, etc.)
+ * - Templates search, limit, and pagination params
+ * - Builds URL string manually to avoid URL encoding of ${{ }} expressions
+ */
+function buildTemplatedUrl(rawUrl: string, cap: any, endpoint: any): string {
+  try {
+    const u = new URL(rawUrl);
+    const base = `${u.protocol}//${u.host}${u.pathname}`;
+    const params: Array<[string, string]> = [];
+
+    const hasKeyword = cap.recommendedArgs?.some((a: any) => a.name === 'keyword');
+
+    u.searchParams.forEach((v, k) => {
+      // Skip volatile params
+      if (VOLATILE_PARAMS.has(k)) return;
+
+      // Template known param types
+      if (hasKeyword && SEARCH_PARAM_NAMES.has(k)) {
+        params.push([k, '${{ args.keyword }}']);
+      } else if (LIMIT_PARAM_NAMES.has(k)) {
+        params.push([k, '${{ args.limit | default(20) }}']);
+      } else if (PAGE_PARAM_NAMES.has(k)) {
+        params.push([k, '${{ args.page | default(1) }}']);
+      } else {
+        params.push([k, v]);
+      }
+    });
+
+    if (params.length === 0) return base;
+    return base + '?' + params.map(([k, v]) => `${k}=${v}`).join('&');
+  } catch {
+    return rawUrl;
+  }
+}
+
 /**
  * Build a YAML pipeline definition from a capability + endpoint.
  */
@@ -82,33 +125,9 @@ function buildCandidateYaml(site: string, manifest: any, cap: any, endpoint: any
     pipeline.push({ navigate: manifest.target_url });
   }
 
-  // Step 2: Fetch the API
-  const fetchUrl = endpoint?.url ?? manifest.target_url;
-  const fetchStep: any = { url: fetchUrl };
-
-  // If it has search params, template them
-  if (cap.recommendedArgs?.some((a: any) => a.name === 'keyword')) {
-    try {
-      const u = new URL(fetchUrl);
-      // Find the search query param and template it
-      for (const [k, _v] of u.searchParams) {
-        if (['q', 'query', 'keyword', 'search', 'wd', 'kw', 'w', 'search_query'].includes(k)) {
-          u.searchParams.set(k, '${{ args.keyword }}');
-        }
-      }
-      fetchStep.url = u.toString().replace(/%24%7B%7B/g, '${{').replace(/%7D%7D/g, '}}');
-    } catch {}
-  }
-
-  // Add limit param if supported
-  if (endpoint?.queryParams?.some((p: string) => ['ps', 'page_size', 'limit', 'count', 'per_page', 'size', 'num'].includes(p))) {
-    try {
-      const u = new URL(fetchStep.url);
-      const limitParam = endpoint.queryParams.find((p: string) => ['ps', 'page_size', 'limit', 'count', 'per_page', 'size', 'num'].includes(p));
-      if (limitParam) u.searchParams.set(limitParam, '${{ args.limit | default(20) }}');
-      fetchStep.url = u.toString().replace(/%24%7B%7B/g, '${{').replace(/%7D%7D/g, '}}');
-    } catch {}
-  }
+  // Step 2: Fetch the API — build a clean URL with templates
+  const rawUrl = endpoint?.url ?? manifest.target_url;
+  const fetchStep: any = { url: buildTemplatedUrl(rawUrl, cap, endpoint) };
 
   pipeline.push({ fetch: fetchStep });
 

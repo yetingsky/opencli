@@ -118,17 +118,33 @@ interface InferredCapability {
 
 /**
  * Parse raw network output from Playwright MCP into structured entries.
+ * Handles both text format ([GET] url => [200]) and structured JSON.
  */
 function parseNetworkOutput(raw: any): NetworkEntry[] {
   if (typeof raw === 'string') {
     // Playwright MCP returns network as text lines like:
-    // "GET https://api.example.com/xxx → 200 (application/json)"
+    // "[GET] https://api.example.com/xxx => [200] "
+    // May also have markdown headers like "### Result"
     const entries: NetworkEntry[] = [];
     const lines = raw.split('\n').filter((l: string) => l.trim());
     for (const line of lines) {
-      const match = line.match(/^(GET|POST|PUT|DELETE|PATCH|OPTIONS)\s+(\S+)\s*→?\s*(\d+)?\s*(?:\(([^)]*)\))?/i);
-      if (match) {
-        const [, method, url, status, ct] = match;
+      // Format: [METHOD] URL => [STATUS] optional_extra
+      const bracketMatch = line.match(/^\[?(GET|POST|PUT|DELETE|PATCH|OPTIONS)\]?\s+(\S+)\s*(?:=>|→)\s*\[?(\d+)\]?/i);
+      if (bracketMatch) {
+        const [, method, url, status] = bracketMatch;
+        entries.push({
+          method: method.toUpperCase(),
+          url,
+          status: status ? parseInt(status) : null,
+          contentType: url.endsWith('.json') ? 'application/json' :
+                       (url.includes('/api/') || url.includes('/x/')) ? 'application/json' : '',
+        });
+        continue;
+      }
+      // Legacy format: GET url → 200 (application/json)
+      const legacyMatch = line.match(/^(GET|POST|PUT|DELETE|PATCH|OPTIONS)\s+(\S+)\s*→?\s*(\d+)?\s*(?:\(([^)]*)\))?/i);
+      if (legacyMatch) {
+        const [, method, url, status, ct] = legacyMatch;
         entries.push({
           method: method.toUpperCase(),
           url,
@@ -151,6 +167,8 @@ function parseNetworkOutput(raw: any): NetworkEntry[] {
   }
   return [];
 }
+
+
 
 /**
  * Normalize a URL into a pattern by replacing IDs with placeholders.
